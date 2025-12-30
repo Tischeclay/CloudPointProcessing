@@ -128,4 +128,4 @@ python point_cloud_denoising.py sonar_data.xyz cleaned_data.xyz \
 
 ## 许可证
 
-本程序仅供学习和研究使用。
+本程序仅供学习和研究使用。# CloudPointProcessing
