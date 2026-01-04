@@ -1,6 +1,321 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
+三维声呐点云噪点去除核心模块
+提供多种点云去噪算法的实现
+"""
+
+import numpy as np
+import open3d as o3d
+from sklearn.cluster import DBSCAN
+from sklearn.neighbors import NearestNeighbors
+import warnings
+warnings.filterwarnings('ignore')
+
+class PointCloudDenoiser:
+    """点云噪点去除器"""
+    
+    def __init__(self):
+        self.original_cloud = None
+        self.filtered_cloud = None
+        self.statistics = {}
+    
+    def load_xyz_file(self, file_path):
+        """加载XYZ格式的点云文件"""
+        try:
+            # 读取XYZ文件
+            points = np.loadtxt(file_path)
+            
+            # 创建Open3D点云对象
+            self.original_cloud = o3d.geometry.PointCloud()
+            self.original_cloud.points = o3d.utility.Vector3dVector(points)
+            
+            # 初始化过滤后的点云
+            self.filtered_cloud = None
+            self.statistics = {}
+            
+            print(f"成功加载点云文件: {file_path}")
+            print(f"点云包含 {len(points)} 个点")
+            
+            return True
+            
+        except Exception as e:
+            print(f"加载文件失败: {str(e)}")
+            return False
+    
+    def save_xyz_file(self, file_path):
+        """保存点云为XYZ格式"""
+        if self.filtered_cloud is None:
+            print("没有可保存的过滤后点云")
+            return False
+        
+        try:
+            points = np.asarray(self.filtered_cloud.points)
+            np.savetxt(file_path, points, fmt='%.6f %.6f %.6f')
+            print(f"点云已保存到: {file_path}")
+            return True
+        except Exception as e:
+            print(f"保存文件失败: {str(e)}")
+            return False
+    
+    def statistical_outlier_removal(self, nb_neighbors=20, std_ratio=2.0):
+        """统计滤波去除离群点"""
+        if self.original_cloud is None:
+            print("请先加载点云文件")
+            return False
+        
+        try:
+            print(f"执行统计滤波 - 邻近点数量: {nb_neighbors}, 标准差倍数: {std_ratio}")
+            
+            # 执行统计滤波
+            self.filtered_cloud, _ = self.original_cloud.remove_statistical_outlier(
+                nb_neighbors=nb_neighbors,
+                std_ratio=std_ratio
+            )
+            
+            # 计算统计信息
+            self._calculate_statistics()
+            
+            print(f"统计滤波完成，保留了 {len(self.filtered_cloud.points)} 个点")
+            return True
+            
+        except Exception as e:
+            print(f"统计滤波失败: {str(e)}")
+            return False
+    
+    def radius_outlier_removal(self, radius=1.0, min_points=5):
+        """半径滤波去除离群点"""
+        if self.original_cloud is None:
+            print("请先加载点云文件")
+            return False
+        
+        try:
+            print(f"执行半径滤波 - 搜索半径: {radius}, 最少点数: {min_points}")
+            
+            # 执行半径滤波
+            self.filtered_cloud, _ = self.original_cloud.remove_radius_outlier(
+                nb_points=min_points,
+                radius=radius
+            )
+            
+            # 计算统计信息
+            self._calculate_statistics()
+            
+            print(f"半径滤波完成，保留了 {len(self.filtered_cloud.points)} 个点")
+            return True
+            
+        except Exception as e:
+            print(f"半径滤波失败: {str(e)}")
+            return False
+    
+    def clustering_denoising(self, eps=0.5, min_samples=10):
+        """基于聚类的噪点去除"""
+        if self.original_cloud is None:
+            print("请先加载点云文件")
+            return False
+        
+        try:
+            print(f"执行聚类滤波 - 聚类距离: {eps}, 最少样本: {min_samples}")
+            
+            # 获取点云坐标
+            points = np.asarray(self.original_cloud.points)
+            
+            # 执行DBSCAN聚类
+            clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(points)
+            labels = clustering.labels_
+            
+            # 保留非噪点聚类
+            valid_mask = labels != -1
+            
+            # 创建过滤后的点云
+            self.filtered_cloud = o3d.geometry.PointCloud()
+            self.filtered_cloud.points = o3d.utility.Vector3dVector(points[valid_mask])
+            
+            # 计算统计信息
+            self._calculate_statistics()
+            
+            n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+            print(f"聚类滤波完成，发现 {n_clusters} 个聚类，保留了 {len(self.filtered_cloud.points)} 个点")
+            return True
+            
+        except Exception as e:
+            print(f"聚类滤波失败: {str(e)}")
+            return False
+    
+    def density_based_denoising(self, k=10, density_threshold=0.1):
+        """基于密度的噪点去除"""
+        if self.original_cloud is None:
+            print("请先加载点云文件")
+            return False
+        
+        try:
+            print(f"执行密度滤波 - 邻居数量: {k}, 密度阈值: {density_threshold}")
+            
+            # 获取点云坐标
+            points = np.asarray(self.original_cloud.points)
+            
+            # 计算每个点的k近邻距离
+            nbrs = NearestNeighbors(n_neighbors=k+1).fit(points)
+            distances, _ = nbrs.kneighbors(points)
+            
+            # 使用第k个邻居的距离作为密度指标
+            k_distances = distances[:, k]
+            
+            # 计算密度统计信息
+            density_mean = np.mean(k_distances)
+            density_std = np.std(k_distances)
+            
+            # 密度阈值
+            threshold = density_mean - density_threshold * density_std
+            
+            # 保留密度高于阈值的点
+            valid_mask = k_distances <= threshold
+            
+            # 创建过滤后的点云
+            self.filtered_cloud = o3d.geometry.PointCloud()
+            self.filtered_cloud.points = o3d.utility.Vector3dVector(points[valid_mask])
+            
+            # 计算统计信息
+            self._calculate_statistics()
+            
+            print(f"密度滤波完成，保留了 {len(self.filtered_cloud.points)} 个点")
+            return True
+            
+        except Exception as e:
+            print(f"密度滤波失败: {str(e)}")
+            return False
+    
+    def combined_denoising(self):
+        """组合多种滤波方法"""
+        if self.original_cloud is None:
+            print("请先加载点云文件")
+            return False
+        
+        try:
+            print("执行组合滤波...")
+            
+            # 步骤1: 统计滤波
+            temp_cloud, _ = self.original_cloud.remove_statistical_outlier(
+                nb_neighbors=15,
+                std_ratio=2.0
+            )
+            print(f"步骤1 - 统计滤波: {len(temp_cloud.points)} 个点")
+            
+            # 步骤2: 半径滤波
+            temp_cloud, _ = temp_cloud.remove_radius_outlier(
+                nb_points=5,
+                radius=1.0
+            )
+            print(f"步骤2 - 半径滤波: {len(temp_cloud.points)} 个点")
+            
+            # 步骤3: 聚类滤波
+            points = np.asarray(temp_cloud.points)
+            if len(points) > 100:  # 确保有足够的点进行聚类
+                clustering = DBSCAN(eps=0.3, min_samples=5).fit(points)
+                labels = clustering.labels_
+                valid_mask = labels != -1
+                
+                self.filtered_cloud = o3d.geometry.PointCloud()
+                self.filtered_cloud.points = o3d.utility.Vector3dVector(points[valid_mask])
+                print(f"步骤3 - 聚类滤波: {len(self.filtered_cloud.points)} 个点")
+            else:
+                self.filtered_cloud = temp_cloud
+            
+            # 计算统计信息
+            self._calculate_statistics()
+            
+            print(f"组合滤波完成，最终保留了 {len(self.filtered_cloud.points)} 个点")
+            return True
+            
+        except Exception as e:
+            print(f"组合滤波失败: {str(e)}")
+            return False
+    
+    def _calculate_statistics(self):
+        """计算处理统计信息"""
+        if self.original_cloud is None or self.filtered_cloud is None:
+            return
+        
+        original_count = len(self.original_cloud.points)
+        filtered_count = len(self.filtered_cloud.points)
+        removed_count = original_count - filtered_count
+        retention_rate = (filtered_count / original_count) * 100
+        
+        self.statistics = {
+            'original_points': original_count,
+            'filtered_points': filtered_count,
+            'removed_points': removed_count,
+            'retention_rate': retention_rate
+        }
+    
+    def get_statistics(self):
+        """获取处理统计信息"""
+        return self.statistics
+    
+    def visualize_point_clouds(self, show_original=True, show_filtered=True):
+        """可视化点云（需要在GUI环境中使用）"""
+        try:
+            if show_original and self.original_cloud is not None:
+                # 创建可视化窗口
+                vis = o3d.visualization.Visualizer()
+                vis.create_window(visible=False)
+                
+                # 添加原始点云
+                vis.add_geometry(self.original_cloud)
+                
+                if show_filtered and self.filtered_cloud is not None:
+                    # 为不同点云设置不同的颜色
+                    self.original_cloud.paint_uniform_color([1, 0, 0])  # 红色
+                    self.filtered_cloud.paint_uniform_color([0, 1, 0])   # 绿色
+                    vis.update_geometry(self.filtered_cloud)
+                
+                # 运行可视化
+                vis.run()
+                vis.destroy_window()
+                
+        except Exception as e:
+            print(f"可视化失败: {str(e)}")
+    
+    def export_processing_report(self, file_path):
+        """导出处理报告"""
+        if not self.statistics:
+            print("没有可导出的处理统计信息")
+            return False
+        
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write("=== 三维声呐点云噪点去除处理报告 ===\n\n")
+                f.write(f"原始点数: {self.statistics['original_points']}\n")
+                f.write(f"保留点数: {self.statistics['filtered_points']}\n")
+                f.write(f"移除点数: {self.statistics['removed_points']}\n")
+                f.write(f"保留率: {self.statistics['retention_rate']:.2f}%\n")
+                f.write(f"\n处理完成时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            
+            print(f"处理报告已导出到: {file_path}")
+            return True
+            
+        except Exception as e:
+            print(f"导出报告失败: {str(e)}")
+            return False
+
+if __name__ == "__main__":
+    # 示例使用
+    import time
+    
+    # 创建点云去噪器
+    denoiser = PointCloudDenoiser()
+    
+    print("=== 三维声呐点云噪点去除程序 ===")
+    print("支持的文件格式: .xyz")
+    print("处理方法: 统计滤波、半径滤波、聚类滤波、密度滤波、组合滤波")
+    print("使用方法:")
+    print("  denoiser = PointCloudDenoiser()")
+    print("  denoiser.load_xyz_file('input.xyz')")
+    print("  denoiser.statistical_outlier_removal()")
+    print("  denoiser.save_xyz_file('output.xyz')")
+    print()#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
 三维声呐点云噪点去除程序
 支持直接输入.xyz文件并进行多种噪点去除算法的处理
 """
